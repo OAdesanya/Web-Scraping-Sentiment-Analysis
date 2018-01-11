@@ -1,0 +1,489 @@
+---
+title: <font color="#0241a3"> Warranty & Sentiment </font>
+author: "Femi Adesanya"
+date: "January 5 2018"
+output: 
+  html_document: 
+    df_print: kable
+    fig_height: 6
+    fig_width: 9
+    theme: united
+    toc: yes
+    toc_depth: 5
+---
+
+
+```{r, include = F}
+package = c("qdap",      "tidyverse", "magrittr",   "knitr", 
+            "markdown",  'quanteda',  "sentimentr", "igraph",
+            "syuzhet",   "pracma",    "tidytext",   "stringr",  
+            "readxl",    'ggraph',    "nlme",       "lubridate", 
+            "wordcloud", "lexicon",   "plotly",     "textclean")
+
+sapply(package, function(x) suppressMessages(require(x, character.only=T)))
+
+opts_chunk$set(echo      = F, comment    = ">>>", warning   = F, 
+               error     = F, cache      = F,     results   = "asis",
+               message   = F, dpi        = 90,    fig.show  = "asis",  
+               fig.align = "center")
+```
+
+
+```{r}
+warranty = read_rds("C:/Users/26291/Documents/FEMI_FOLDER/data_all.rds") 
+
+stop_words = 
+  c(tm::stopwords("english"), lexicon::sw_python) %>% 
+  tolower() %>% 
+  unique()
+```
+
+
+```{r}
+warranty_clean = 
+  warranty %>%
+  filter(!author %in% c("Chris", "John", "Mike")) %>%
+  within(., {
+    clean.rev = 
+      review %>% 
+      iconv("latin1", "UTF-8", sub = "") %>%
+      replace_non_ascii() %>%
+      replace_contraction() %>%
+      replace_abbreviation() %>%
+      replace_emoji() %>%
+      replace_emoticon() %>%
+      tolower() %>% 
+      rm_url(replacement = " ") %>%
+      rm_email(replacement = " ") %>%
+      rm_stop(stopwords = stop_words, separate=F) %>%
+      str_replace_all("\\b\\w{1,2}\\b", " ") %>% 
+      str_replace_all("[\t\r\n]", " ") %>% 
+      str_replace_all( 
+     "[^\\!?.[:^punct:]]|[\\$]|\\=|\\>|\\<|\\~|\\`|\\^|\\+|\\|", " ") %>%
+      str_replace_all("[[:digit:]]", " ") %>%
+      rm_white() 
+    clean.rev.stem = 
+      clean.rev %>%
+      stemmer(capitalize = F, char.keep = c(".", "?", "!"), warn = F)
+  }) %>%
+  mutate(nword = stringi::stri_count(clean.rev, regex = "[[:alpha:]]+"))
+```
+
+
+### <font color="tomato"> I. Textmining </font>
+
+
+#### <font color="purple"> Word and document frequency based on tf-idf</font>
+
+
+
+```{r}
+tf_idf = 
+  warranty_clean %>% 
+  unnest_tokens(word, clean.rev.stem, token="words") %>% 
+  count(brand, word, sort=T) %>%
+  ungroup() %>%
+  bind_tf_idf(word, brand, n) %>%
+  arrange(desc(tf_idf))
+```
+
+
+```{r, fig.cap="Top 20 words based on tf-idf", fig.height=11}
+p = 
+  tf_idf %>%
+  group_by(brand) %>%
+  top_n(20, tf_idf) %>% # top ten words
+  slice(1:20) %>%
+  ungroup() %>%
+  ggplot(aes(reorder(word, desc(tf_idf)), tf_idf, fill = brand)) +
+  theme_classic() +
+  geom_col(show.legend = FALSE, alpha = .5) +
+  facet_wrap(~brand, ncol=1, scales="free") +
+  theme(axis.text.x = element_text(angle = 20, hjust = 1)) +
+  labs(x="Terms", y="tf-idf")  +
+  guides(fill=FALSE)
+  
+ggplotly(p, filename="legend/hiding")
+```
+
+
+
+#### <font color="purple"> Wordcloud of the most frequent words (top 100)</font>
+
+
+```{r}
+warranty_clean %>% 
+  select(brand, clean.rev.stem) %>%
+  corpus(text_field = "clean.rev.stem") %>%
+  dfm(groups = "brand", verbose = F, 
+      remove = "[[:punct:]]", valuetype = "regex") %>%
+  dfm_weight(type = "tfidf") %>%
+  textplot_wordcloud(comparison = T,  
+                     colors = c("#f37736", "#7bc043", "#800080"), 
+                     title.size = 1.5, 
+                     scale = c(2.2, .7), 
+                     max.words = 240, 
+                     use.r.layout = T)
+```
+
+
+
+#### <font color="purple"> Identify multi-word expressions </font>
+
+
+```{r}
+colloc_data = NULL
+n = 50
+brd = warranty_clean$brand %>% unique()
+for(i in seq_along(brd)) {
+  tempo =
+    warranty_clean %>%
+    dplyr::filter(brand == as.character(brd[i])) %$%
+    textstat_collocations(clean.rev.stem, size = 2, min_count=5) %>%
+    top_n(n, desc(z)) %>%
+    slice(1:n) %>%
+    select(collocation, count) %>%
+    mutate(brand = brd[i]) %>%
+    separate(collocation, c("prefix", "suffix"), sep=" ") 
+  colloc_data = rbind(colloc_data, tempo) %>% as.tibble()
+}
+
+```
+
+
+```{r}
+network = function(data, k){
+  network = 
+    data %>% 
+    filter(brand == k) %>% 
+    graph_from_data_frame() %>%
+    ggraph(layout='igraph', algorithm='fr') +
+    geom_edge_link(aes(edge_alpha = count, edge_width = count), 
+                   edge_colour = "#40e0d0") +
+    geom_node_point(size=2, colour="darkred") + 
+    geom_node_text(aes(label=name), repel=T, point.padding=unit(0.1, "lines")) +
+    theme_void() 
+  return(network)
+}
+```
+
+-- Company **Apple**
+
+```{r, fig.width=11, fig.height=7}
+network(colloc_data, brd[1])
+```
+
+-- Company **BestBuy**
+
+```{r, fig.width=11, fig.height=7}
+network(colloc_data, brd[2])
+```
+
+-- Company **Microsoft**
+
+```{r, fig.width=11, fig.height=7}
+network(colloc_data, brd[3])
+```
+
+
+### <font color="tomato"> II. Sentiment Analysis </font>
+
+
+#### <font color="purple"> Sentiment distributions by company </font>
+
+
+```{r, eval=T}
+warranty_sent = 
+  warranty_clean %>% 
+  filter(nword > 2) %>% 
+  mutate(score_sent = 
+         sentiment_by(clean.rev, 
+         polarity_dt = lexicon::hash_sentiment_senticnet,
+         averaging.function=average_weighted_mixed_sentiment)$ave_sentiment) %>%
+         cbind(., get_nrc_sentiment(.$clean.rev))
+```
+
+
+```{r}
+#warranty_sent = readRDS("warranty_sent.rds")
+
+warranty_sent %>% 
+  filter(!is.na(score_sent)) %>%
+  mutate(sentiment = ifelse(score_sent > 0.01, "Positive", 
+                            ifelse(score_sent < -0.01, "Negative", NA))) %>%
+  filter(!is.na(sentiment)) %>%
+  group_by(brand) %>%
+  dplyr::count(sentiment) %>%
+  mutate(prop = n/sum(n)) %>%
+  ungroup() %>%
+  plot_ly(x      =~ brand, 
+          y      =~ prop, 
+          type   = 'bar', 
+          color  =~ sentiment, 
+          marker = list(line=list(color='black', width=1.5))) %>%
+  layout(title = "", 
+         xaxis = list(title = ""),
+         yaxis = list(title = "Proportion"))
+```
+
+
+```{r}
+library(qdap)
+polarity = with(sentSplit(warranty_clean, "clean.rev"), 
+               polarity(clean.rev, brand))
+
+#polarity = readRDS("polarity.rds")
+plot(scores(polarity)) 
+```
+
+
+#### <font color="purple"> Wordclouds by sentiment and company </font>
+
+
+
+```{r}
+cloud = function(data, tp, brd){
+  cloud = lexicon::hash_sentiment_jockers_rinker %>% 
+    rename(word=x, score_sent=y) 
+  cloud = 
+    inner_join(cloud, tf_idf, by="word") %>%
+    select(brand, word, n, score_sent, tf_idf) %>%
+    mutate(sentiment = ifelse(score_sent>0.01, "Positive", 
+                            ifelse(score_sent<-0.01, "Negative", NA))) %>%
+    filter(!is.na(sentiment)) %>%
+    group_by(brand, sentiment) %>%
+    top_n(tp, tf_idf) %>%
+    slice(1:tp) %>%
+    ungroup() %>%
+    select(brand, word, sentiment, n) %>%
+    arrange(brand, sentiment, n) %>%
+    filter(brand == brd) %>% 
+    select(-brand) %>%
+    reshape2::acast(word ~ sentiment, value.var="n", fill=0)
+  return(cloud)
+  }
+```
+
+-- Company **Apple**
+
+```{r}
+cloud(tf_idf, 80, brd[1]) %>%
+comparison.cloud(color = c("red", "green"), 
+                 max.words = 100, 
+                 title.size = 2, 
+                 use.r.layout = T)
+```
+
+-- Comapny **BestBuy**
+
+```{r}
+cloud(tf_idf, 80, brd[2]) %>%
+comparison.cloud(color = c("red", "green"), 
+                 max.words = 100, 
+                 title.size = 2, 
+                 use.r.layout = T)
+```
+
+-- Company **Microsoft**
+
+```{r}
+cloud(tf_idf, 80, brd[3]) %>%
+comparison.cloud(color = c("red", "green"), 
+                 max.words = 100, 
+                 title.size = 2, 
+                 use.r.layout = T)
+```
+
+
+#### <font color="purple"> Emotions distributions by category </font>
+
+
+
+```{r, fig.width=11}
+warranty_sent %>% 
+  dplyr::select(brand, anger:trust) %>%
+  group_by(brand) %>%
+  summarise(anger    = sum(anger, na.rm=T),
+            anticipation = sum(anticipation, na.rm=T),
+            disgust  = sum(disgust, na.rm=T),
+            fear     = sum(fear, na.rm=T),
+            joy      = sum(joy, na.rm=T),
+            sadness  = sum(sadness, na.rm=T),
+            surprise = sum(surprise, na.rm=T),
+            trust    = sum(trust, na.rm=T)) %>%
+  ungroup() %>%
+  gather(emotions, freq, -brand) %>%
+  group_by(brand) %>%
+  mutate(prop = freq/sum(freq)) %>%
+  ungroup() %>%
+  plot_ly(x      =~ brand, 
+          y      =~ prop, 
+          type   = 'bar', 
+          color  =~ emotions, 
+          marker = list(line=list(color='black', width=1.5))) %>%
+  layout(title = "",
+         xaxis = list(title = " "),
+         yaxis = list(title = "Proportion"))
+```
+
+
+### <font color="tomato"> III. Warranty association </font>
+
+
+#### <font color="purple"> Association between warranty keywords and company </font>
+
+```{r, fig.width=10}
+keywords = dictionary(
+  list(leave     = "leav*",   stay      = "stay*",
+       buy       = "buy*",    not_buy   = "not buy*", 
+       bad       = "bad*",    good      = "good*", 
+       useful    = "usef*",   useless   = "usel*", 
+       worth     = "wort*",   not_worth = "not wort*",
+       expensive = "expens*", cheap     = "cheap*",
+       happy     = "happ*",   unhappy   = "unhapp*",
+       service   = "servic*")
+  )
+                  
+dfm_relfreq = 
+  warranty_clean %>%
+  corpus(text_field = "clean.rev") %>%
+  dfm(dictionary = keywords, remove_punct = TRUE, groups = "brand") %>%
+  dfm_weight(type = "relfreq") %>%
+  as.data.frame() %>%
+  mutate(brand = rownames(.)) %>%
+  gather(key = keywords, value = frequency ,-brand) %>%
+  mutate(keywords = Hmisc::capitalize(keywords) %>% gsub("_", " ", .),
+         frequency = round(frequency, 2))
+
+p = 
+  dfm_relfreq %>%
+  ggplot(aes(x = reorder(keywords, frequency), y = frequency)) +
+  geom_point(shape = 19, size = 3, color = "darkred", alpha = 0.3) +
+  facet_wrap(~ brand, scales = "free") +
+  coord_flip() +
+  theme_classic() +
+  labs(x = NULL, y = "Relative frequency")
+
+ggplotly(p)
+```
+
+
+#### <font color="purple"> Association between synonymous and company </font>
+
+
+```{r}
+syno = list(
+    leave = 
+      c(synonyms("leave", F), "leave"),
+    stay = 
+      c(synonyms("stay", F), "stay"),
+    buy = 
+      c(synonyms("buy", F), "buy"),
+    cheap = 
+      c(synonyms("cheap", F), "cheap"),
+    expensive = 
+      c(synonyms("expensive", F), "expensive"),
+    useful = 
+      c(synonyms("useful", F), "useful"),
+    useless = 
+      c(synonyms("useless", F), "useless"),
+    happy = 
+      c(synonyms("happy", F), "happy"),
+    unhappy = 
+      c(synonyms("unhappy", F), "unhappy")
+    ) %>% 
+  dictionary()
+
+dfm_syno = 
+  warranty_clean %>%
+  corpus(text_field = "clean.rev") %>%
+  dfm(dictionary = syno, remove_punct = T, groups = "brand") %>%
+  dfm_weight(type = "relfreq") %>%
+  as.data.frame() %>%
+  mutate(brand = rownames(.)) %>%
+  gather(key = keywords, value = frequency ,-brand) %>%
+  mutate(keywords = Hmisc::capitalize(keywords) %>% gsub("_", " ", .),
+         frequency = round(frequency, 2))
+
+p = 
+  dfm_syno %>%
+  ggplot(aes(x = reorder(keywords, frequency), y = frequency)) +
+  geom_point(shape = 19, size = 3, color = "darkred", alpha = 0.3) +
+  facet_wrap(~ brand, scales = "free") +
+  coord_flip() +
+  theme_classic() +
+  labs(x = NULL, y = "Relative frequency")
+
+ggplotly(p)
+```
+
+
+
+#### <font color="purple"> Locate keywords-in-context by company </font>
+
+
+> Company Apple
+
+
+```{r}
+data_kwic1 = 
+  warranty_clean %>%
+  filter(brand == brd[1]) %$%
+  kwic(tolower(review), keywords, 10, "glob") %>%
+  as.tibble() %>%
+  select(pre, keyword, post) %>%
+  arrange(keyword) %>%
+  DT::datatable(rownames = NULL, 
+                colnames = c("Pre", "Keywords", "Post"),
+                options = list(pageLength = 15, autoWidth = TRUE), 
+                caption = "Keywords context in Apple reviews")
+
+data_kwic1
+```
+
+
+> Company BestBuy
+
+
+```{r}
+data_kwic2 = 
+  warranty_clean %>%
+  filter(brand == brd[2]) %$%
+  kwic(tolower(review), keywords, 10, "glob") %>%
+  as.tibble() %>%
+  select(pre, keyword, post) %>%
+  arrange(keyword) %>%
+  DT::datatable(rownames = NULL, 
+                colnames = c("Pre", "Keywords", "Post"),
+                options = list(pageLength = 15, autoWidth = TRUE), 
+                caption = "Keywords context in BestBuy reviews")
+
+data_kwic2
+```
+
+
+
+> Company Microsoft
+
+
+```{r}
+data_kwic3 = 
+  warranty_clean %>%
+  filter(brand == brd[3]) %$%
+  kwic(tolower(review), keywords, 10, "glob") %>%
+  as.tibble() %>%
+  select(pre, keyword, post) %>%
+  arrange(keyword) %>%
+  DT::datatable(rownames = NULL, 
+                colnames = c("Pre", "Keywords", "Post"),
+                options = list(pageLength = 15, autoWidth = TRUE), 
+                caption = "Keywords context in Microsoft reviews")
+
+data_kwic3
+```
+
+
+
+
+
+
